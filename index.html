@@ -122,7 +122,7 @@
         <article class="stat"><div class="stat-label"><i class="stat-dot" style="background:#7c3aed"></i>Atendimentos de hoje</div><div class="stat-value" id="statServices">—</div></article>
       </div>
       <div class="panel">
-        <div class="panel-head"><div><h2>Agenda de hoje</h2><p class="sub">Horários registrados para a data atual.</p></div><button class="btn outline" data-go="agenda">Abrir agenda</button></div>
+        <div class="panel-head"><div><h2>Agenda de hoje</h2><p class="sub">Horários registrados para a data atual.</p></div><div class="actions" style="margin:0"><button class="btn secondary" id="refreshData" type="button">↻ Atualizar dados</button><button class="btn outline" data-go="agenda">Abrir agenda</button></div></div>
         <div class="table-wrap"><table><thead><tr><th>Horário</th><th>Aluno</th><th>Unidade</th><th>Status</th></tr></thead><tbody id="todayAgenda"><tr><td colspan="4" class="empty">Carregando dados…</td></tr></tbody></table></div>
       </div>
     </section>
@@ -202,65 +202,54 @@
 <nav class="mobile-nav" id="mobileNav">
   <button class="nav-btn active" data-page="dashboard"><span class="nav-icon">▦</span>Painel</button>
   <button class="nav-btn" data-page="cadastro"><span class="nav-icon">＋</span>Cadastro</button>
-  <button class="nav-btn" data-page="agenda"><span class="nav-icon">▣</span>Agendamento</button>
+  <button class="nav-btn" data-page="agenda"><span class="nav-icon">▣</span>Agenda</button>
   <button class="nav-btn" data-page="atendimento"><span class="nav-icon">▤</span>Atendimento</button>
 </nav>
 <script>
-/*
-  CONFIGURAÇÃO: cole aqui a URL do Web App do Google Apps Script após a implantação.
-  Exemplo: https://script.google.com/macros/s/SEU_ID/exec
-*/
-const API_URL = "https://script.google.com/macros/s/AKfycbxiOTz3LIwFxctLBaJzEeulMEi4rAZlOK_I29-v51CC-Yi9qnZvZHZeEYlEBmsK5oHxjA/exec";
+/* O index é servido pelo Apps Script. Não abrir diretamente pelo arquivo local. */
 const $ = id => document.getElementById(id);
 const state = { students: [], services: [], appointments: [] };
 const today = new Date();
 const isoToday = [today.getFullYear(),String(today.getMonth()+1).padStart(2,'0'),String(today.getDate()).padStart(2,'0')].join('-');
 const dateBR = v => { if(!v) return ""; const d = new Date(String(v).length===10 ? v+"T12:00:00" : v); return isNaN(d)?"":d.toLocaleDateString("pt-BR"); };
 const escapeHTML = s => String(s ?? "").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-function notice(msg,type="info"){const el=$("notice");el.textContent=msg;el.className="notice show "+type;window.scrollTo({top:0,behavior:"smooth"});}
+function notice(msg,type="info"){const el=$("notice");el.textContent=msg;el.className="notice show "+type;}
 function setToday(){ $("todayLabel").textContent = today.toLocaleDateString("pt-BR",{weekday:"long",day:"2-digit",month:"long",year:"numeric"}); }
 function go(page){document.querySelectorAll(".page").forEach(x=>x.classList.toggle("active",x.id==="page-"+page));document.querySelectorAll("[data-page]").forEach(x=>x.classList.toggle("active",x.dataset.page===page));const names={dashboard:"Painel Geral",cadastro:"Cadastro",atendimento:"Atendimento",agenda:"Agendamento"};$("pageTitle").textContent=names[page];}
 document.querySelectorAll("[data-page]").forEach(b=>b.addEventListener("click",()=>go(b.dataset.page)));
 document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>go(b.dataset.go)));
-function jsonp(params){
+function serverCall(method,arg){
   return new Promise((resolve,reject)=>{
-    const cb="aee_cb_"+Date.now()+"_"+Math.floor(Math.random()*1e6),script=document.createElement("script");
-    const timer=setTimeout(()=>{cleanup();reject(new Error("Tempo esgotado ao consultar a planilha."));},20000);
-    function cleanup(){clearTimeout(timer);delete window[cb];script.remove();}
-    window[cb]=data=>{cleanup();resolve(data);};
-    script.onerror=()=>{cleanup();reject(new Error("Não foi possível consultar a planilha. Verifique a implantação e as permissões."));};
-    script.src=API_URL+"?"+new URLSearchParams({...params,callback:cb}).toString();
-    document.body.appendChild(script);
+    if(!window.google || !google.script || !google.script.run){reject(new Error("Abra o Sistema AEE pelo endereço do Web App do Google Apps Script, não pelo arquivo HTML baixado."));return;}
+    const runner=google.script.run.withSuccessHandler(resolve).withFailureHandler(err=>reject(new Error(err && err.message ? err.message : String(err))));
+    if(typeof arg === "undefined") runner[method](); else runner[method](arg);
   });
 }
-async function apiRead(){
-  if(!API_URL){
-    // Prévia vazia: mostra o layout e os estados iniciais sem consultar nem alterar a planilha.
-    state.students=[];state.services=[];state.appointments=[];
-    renderAll();
-    notice("Prévia do Sistema AEE: os módulos estão disponíveis para visualização. A planilha ainda não está conectada e nenhum dado será gravado.","info");
-    return;
-  }
-  const data=await jsonp({action:"list"});
-  if(!data.ok) throw new Error(data.error||"Falha ao carregar dados.");
+async function apiRead(showNotice=false){
+  const data=await serverCall("getAeeData");
+  if(!data || !data.ok) throw new Error((data && data.error) || "Falha ao carregar dados da planilha.");
   state.students=data.students||[];state.services=data.services||[];state.appointments=data.appointments||[];
   renderAll();
+  if(showNotice) notice("Dados atualizados diretamente da planilha.","ok");
 }
 async function apiWrite(payload){
-  if(!API_URL){notice("A integração ainda não foi configurada. O formulário está pronto, mas o registro não foi enviado.","error");return false;}
   try{
-    // text/plain evita preflight CORS. A confirmação é feita relendo a planilha.
-    await fetch(API_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(payload)});
-    await new Promise(r=>setTimeout(r,900));
-    await apiRead();
-    notice("Operação enviada. Confira o novo registro na lista e na planilha.","ok");
+    let result;
+    if(payload.action==="createStudent"||payload.action==="updateStudent") result=await serverCall("saveStudent",payload);
+    else if(payload.action==="createService") result=await serverCall("saveService",payload.service);
+    else if(payload.action==="createAppointment") result=await serverCall("saveAppointment",payload.appointment);
+    else throw new Error("Operação não reconhecida.");
+    if(!result || !result.ok) throw new Error((result && result.message) || "Não foi possível salvar o registro.");
+    await apiRead(false);
+    notice(result.message || "Registro salvo e sincronizado com a planilha.","ok");
     return true;
   }catch(e){notice(e.message,"error");return false;}
 }
-function calcAge(birth){if(!birth)return "";const b=new Date(birth+"T12:00:00"),n=new Date();if(isNaN(b.getTime()))return "";let a=n.getFullYear()-b.getFullYear();if(n.getMonth()<b.getMonth()||(n.getMonth()===b.getMonth()&&n.getDate()<b.getDate()))a--;return a>=0?a:"";}
-// A idade é recalculada pela data de nascimento para evitar valores vazios/desatualizados vindos da planilha.
-function ageOfStudent(student){if(!student)return "";const calculated=calcAge(student.birthDate);if(calculated!=="")return calculated;return student.age==null?"":student.age;}
-function ageByName(name){const student=state.students.find(s=>normalizeSearch(s.name)===normalizeSearch(name));return ageOfStudent(student);}
+function calcAge(birth){if(!birth)return "";const b=new Date(birth+"T12:00:00"),n=new Date();let a=n.getFullYear()-b.getFullYear();if(n.getMonth()<b.getMonth()||(n.getMonth()===b.getMonth()&&n.getDate()<b.getDate()))a--;return a>=0?a:"";}
+function getStudentAge(student){
+  const age=student?.age;
+  return age!=="" && age!==null && age!==undefined && Number.isFinite(Number(age)) ? Number(age) : calcAge(student?.birthDate);
+}
 function studentOptions(){return '<option value="">Selecione um aluno</option>'+state.students.map(s=>`<option value="${escapeHTML(s.name)}">${escapeHTML(s.name)}</option>`).join("");}
 function syncStudents(){
   $("serviceStudent").innerHTML=studentOptions();$("agendaStudent").innerHTML=studentOptions();
@@ -299,32 +288,36 @@ function initTheme(){let saved="light";try{saved=localStorage.getItem("aee-theme
 function renderStudents(){
   const q=($("studentSearch").value||"").toLowerCase();
   const rows=state.students.filter(s=>(s.name+" "+s.school).toLowerCase().includes(q));
-  $("studentRows").innerHTML=rows.length?rows.map(s=>`<tr><td>${escapeHTML(s.name)}</td><td>${dateBR(s.birthDate)}</td><td>${escapeHTML(ageOfStudent(s))}</td><td>${escapeHTML(s.school)}</td><td><button class="btn outline" data-edit-student="${s.row}">Editar</button></td></tr>`).join(""):'<tr><td colspan="5" class="empty">Nenhum cadastro encontrado.</td></tr>';
+  $("studentRows").innerHTML=rows.length?rows.map(s=>`<tr><td>${escapeHTML(s.name)}</td><td>${dateBR(s.birthDate)}</td><td>${escapeHTML(getStudentAge(s))}</td><td>${escapeHTML(s.school)}</td><td><button class="btn outline" data-edit-student="${s.row}">Editar</button></td></tr>`).join(""):'<tr><td colspan="5" class="empty">Nenhum cadastro encontrado.</td></tr>';
   document.querySelectorAll("[data-edit-student]").forEach(b=>b.addEventListener("click",()=>editStudent(Number(b.dataset.editStudent))));
 }
 function renderServices(){
   const q=($("serviceSearch").value||"").toLowerCase();
   const rows=state.services.filter(s=>(s.student||"").toLowerCase().includes(q)).slice().reverse();
-  $("serviceRows").innerHTML=rows.length?rows.map(s=>`<tr><td>${dateBR(s.date)}</td><td>${escapeHTML(s.student)}</td><td>${escapeHTML(ageByName(s.student) || s.age || "")}</td><td>${escapeHTML(s.disability)}</td><td>${escapeHTML(s.anamnesis).slice(0,130)}</td></tr>`).join(""):'<tr><td colspan="5" class="empty">Nenhum atendimento encontrado.</td></tr>';
+  $("serviceRows").innerHTML=rows.length?rows.map(s=>`<tr><td>${dateBR(s.date)}</td><td>${escapeHTML(s.student)}</td><td>${escapeHTML(s.age)}</td><td>${escapeHTML(s.disability)}</td><td>${escapeHTML(s.anamnesis).slice(0,130)}</td></tr>`).join(""):'<tr><td colspan="5" class="empty">Nenhum atendimento encontrado.</td></tr>';
 }
 function renderAppointments(){
   const q=($("agendaSearch").value||"").toLowerCase(),f=$("agendaFilter").value;
   const rows=state.appointments.filter(a=>(a.student||"").toLowerCase().includes(q)&&(!f||a.status===f)).slice().sort((a,b)=>(b.date||"").localeCompare(a.date||""));
-  $("agendaRows").innerHTML=rows.length?rows.map(a=>`<tr><td>${dateBR(a.date)}</td><td>${escapeHTML(a.time)}</td><td>${escapeHTML(a.student)}</td><td>${escapeHTML(ageByName(a.student) || a.age || "")}</td><td>${escapeHTML(a.school)}</td><td><span class="tag">${escapeHTML(a.status)}</span></td></tr>`).join(""):'<tr><td colspan="6" class="empty">Nenhum agendamento encontrado.</td></tr>';
+  $("agendaRows").innerHTML=rows.length?rows.map(a=>`<tr><td>${dateBR(a.date)}</td><td>${escapeHTML(a.time)}</td><td>${escapeHTML(a.student)}</td><td>${escapeHTML(a.age)}</td><td>${escapeHTML(a.school)}</td><td><span class="tag">${escapeHTML(a.status)}</span></td></tr>`).join(""):'<tr><td colspan="6" class="empty">Nenhum agendamento encontrado.</td></tr>';
 }
 function editStudent(row){
   const s=state.students.find(x=>Number(x.row)===row);if(!s)return;
-  $("studentRow").value=s.row;$("studentName").value=s.name||"";$("birthDate").value=s.birthDate||"";$("studentAge").value=ageOfStudent(s);$("motherName").value=s.mother||"";$("hasReport").value=s.report||"";$("disability").value=s.disability||"";$("cid").value=s.cid||"";$("school").value=s.school||"";go("cadastro");window.scrollTo({top:0,behavior:"smooth"});
+  $("studentRow").value=s.row;$("studentName").value=s.name||"";$("birthDate").value=s.birthDate||"";$("studentAge").value=getStudentAge(s);$("motherName").value=s.mother||"";$("hasReport").value=s.report||"";$("disability").value=s.disability||"";$("cid").value=s.cid||"";$("school").value=s.school||"";go("cadastro");window.scrollTo({top:0,behavior:"smooth"});
 }
 $("birthDate").addEventListener("change",()=>{$("studentAge").value=calcAge($("birthDate").value);});
-$("serviceStudent").addEventListener("change",()=>{const s=state.students.find(x=>x.name===$("serviceStudent").value);$("serviceAge").value=ageOfStudent(s);$("serviceDisability").value=s?.disability||"";});
-$("agendaStudent").addEventListener("change",()=>{const s=state.students.find(x=>x.name===$("agendaStudent").value);$("agendaAge").value=ageOfStudent(s);$("agendaSchool").value=s?.school||"";});
+$("serviceStudent").addEventListener("change",()=>{const s=state.students.find(x=>x.name===$("serviceStudent").value);$("serviceAge").value=s?(getStudentAge(s)):"";$("serviceDisability").value=s?.disability||"";});
+$("agendaStudent").addEventListener("change",()=>{const s=state.students.find(x=>x.name===$("agendaStudent").value);$("agendaAge").value=s?(getStudentAge(s)):"";$("agendaSchool").value=s?.school||"";});
 $("studentForm").addEventListener("submit",async e=>{e.preventDefault();const payload={action:$("studentRow").value?"updateStudent":"createStudent",row:$("studentRow").value||null,student:{name:$("studentName").value.trim(),birthDate:$("birthDate").value,mother:$("motherName").value.trim(),report:$("hasReport").value,disability:$("disability").value.trim(),cid:$("cid").value.trim(),school:$("school").value.trim()}};if(!payload.student.name||!payload.student.birthDate)return; if(await apiWrite(payload)){e.target.reset();$("studentRow").value="";$("studentAge").value="";}});
-$("serviceForm").addEventListener("submit",async e=>{e.preventDefault();const s=state.students.find(x=>x.name===$("serviceStudent").value);if(!s)return;const payload={action:"createService",service:{date:$("serviceDate").value,student:s.name,age:ageOfStudent(s),disability:s.disability||"",anamnesis:$("anamnesis").value.trim(),observation1:$("observation1").value.trim(),observation2:$("observation2").value.trim()}};if(await apiWrite(payload)){e.target.reset();$("serviceDate").value=isoToday;}});
-$("agendaForm").addEventListener("submit",async e=>{e.preventDefault();const s=state.students.find(x=>x.name===$("agendaStudent").value);if(!s)return;const payload={action:"createAppointment",appointment:{date:$("agendaDate").value,time:$("agendaTime").value,student:s.name,age:ageOfStudent(s),school:s.school||"",status:$("agendaStatus").value}};if(await apiWrite(payload)){e.target.reset();$("agendaDate").value=isoToday;$("agendaStatus").value="Agendado";}});
+$("serviceForm").addEventListener("submit",async e=>{e.preventDefault();const s=state.students.find(x=>x.name===$("serviceStudent").value);if(!s)return;const payload={action:"createService",service:{date:$("serviceDate").value,student:s.name,age:getStudentAge(s),disability:s.disability||"",anamnesis:$("anamnesis").value.trim(),observation1:$("observation1").value.trim(),observation2:$("observation2").value.trim()}};if(await apiWrite(payload)){e.target.reset();$("serviceDate").value=isoToday;}});
+$("agendaForm").addEventListener("submit",async e=>{e.preventDefault();const s=state.students.find(x=>x.name===$("agendaStudent").value);if(!s)return;const payload={action:"createAppointment",appointment:{date:$("agendaDate").value,time:$("agendaTime").value,student:s.name,age:getStudentAge(s),school:s.school||"",status:$("agendaStatus").value}};if(await apiWrite(payload)){e.target.reset();$("agendaDate").value=isoToday;$("agendaStatus").value="Agendado";}});
 ["studentSearch","serviceSearch","agendaSearch","agendaFilter"].forEach(id=>$(id).addEventListener("input",()=>({studentSearch:renderStudents,serviceSearch:renderServices,agendaSearch:renderAppointments,agendaFilter:renderAppointments}[id])()));
 $("dashboardSearch").addEventListener("input",renderDashboard);
 $("themeToggle").addEventListener("click",()=>applyTheme(document.body.dataset.theme==="dark"?"light":"dark"));
+$("refreshData").addEventListener("click",()=>apiRead(true).catch(e=>notice(e.message,"error")));
+// Reconsulta a fonte oficial periodicamente e ao voltar para a aba.
+setInterval(()=>{if(document.visibilityState==="visible") apiRead(false).catch(()=>{});},60000);
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible") apiRead(false).catch(e=>notice(e.message,"error"));});
 initTheme();
 $("serviceDate").value=isoToday;$("agendaDate").value=isoToday;setToday();go("dashboard");
 apiRead().catch(e=>notice(e.message,"error"));
